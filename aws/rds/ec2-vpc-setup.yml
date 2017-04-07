@@ -1,0 +1,74 @@
+- hosts: localhost
+  connection: local
+  vars:
+    aws_access_key:
+    aws_secret_key:
+    network: 192.168.237.0/24
+    subnet1: 192.168.237.0/25
+    subnet2: 192.168.237.128/25
+    region: us-east-1
+    az1: b
+    az2: c
+    sec_group_port: 5432
+
+  tasks:
+    - ec2_vpc:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        state: present
+        cidr_block: "{{ network }}"
+        resource_tags: { "Environment":"Development" }
+        subnets:
+          - cidr: "{{ subnet1 }}"
+            az: "{{ region }}{{ az1 }}"
+            resource_tags: { "Environment":"Dev", "Tier" : "DB" }
+          - cidr: "{{ subnet2 }}"
+            az: "{{ region }}{{ az2 }}"
+            resource_tags: { "Environment":"Dev", "Tier" : "DB" }
+        internet_gateway: True
+        route_tables:
+          - subnets:
+              - "{{ subnet1 }}"
+              - "{{ subnet2 }}"
+            routes:
+              - dest: 0.0.0.0/0
+                gw: igw
+        region: "{{ region }}"
+      register: vpc
+
+    - ec2_group:
+        name: db-sec-group
+        description: security group for permitting access to a db
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        state: present
+        vpc_id: "{{ vpc.vpc_id }}"
+        region: "{{ region }}"
+        rules:
+          - proto: tcp
+            from_port: "{{ sec_group_port }}"
+            to_port: "{{ sec_group_port }}"
+            cidr_ip: 0.0.0.0/0
+      register: secgroup
+
+    - rds_subnet_group:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        state: present
+        name: "default-{{ vpc.vpc_id }}"
+        description: rds subnet group created by ansible
+        subnets:
+          - "{{ vpc.subnets[0].id }}"
+          - "{{ vpc.subnets[1].id }}"
+        region: "{{ region }}"
+      register: netgroup
+
+    - set_fact:
+        msg: |
+             vpc id {{ vpc.vpc_id }} created.
+             security group id {{ secgroup.group_id }} created.
+             rds subnet group default-{{ vpc.vpc_id }} created.
+             To create an rds instance using the apb you'll probably have to pass
+             docker run -e OPENSHIFT_TARGET=<your ose url> -e OPENSHIFT_USER=<your ose user> -e OPENSHIFT_PASS=<your ose pass> -e REGION={{ region }} -e SUBNET=default-{{ vpc.vpc_id }} -e VPC_SECURITY_GROUPS={{ secgroup.group_id }} -e AWS_ACCESS_KEY=<your ac> -e AWS_SECRET_KEY=<your sc> ansibleplaybookbundle/rds-postgres-apb provision
+    - debug:
+        msg: "{{ msg.split('\n') }}"
